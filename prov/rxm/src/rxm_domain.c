@@ -483,6 +483,20 @@ static void rxm_config_dyn_rbuf(struct rxm_domain *domain)
 	domain->dyn_rbuf = (ret == FI_SUCCESS);
 }
 
+struct ofi_ops_dynamic_rbuf rxm_dynamic_rbuf = {
+	.size = sizeof(struct ofi_ops_dynamic_rbuf),
+	.get_rbuf = rxm_get_dyn_rbuf,
+}
+
+static int rxm_config_dyn_rbuf(struct rxm_domain *domain)
+{
+	int ret;
+
+	ret = fi_set_ops(&domain->msg_domain->fid, OFI_OPS_DYNAMIC_RBUF, 0,
+			 (void *) &rxm_dynamic_rbuf, NULL);
+	domain->dyn_rbuf = (ret == FI_SUCCESS);
+}
+
 int rxm_domain_open(struct fid_fabric *fabric, struct fi_info *info,
 		struct fid_domain **domain, void *context)
 {
@@ -537,6 +551,10 @@ int rxm_domain_open(struct fid_fabric *fabric, struct fi_info *info,
 	/* detect/set optional capabilities */
 	rxm_config_flow_ctrl(rxm_domain);
 	rxm_config_dyn_rbuf(rxm_domain);
+
+	ret = rxm_config_dyn_rbuf(rxm_domain);
+	if (ret)
+		goto err4;
 
 	fi_freeinfo(msg_info);
 	return 0;

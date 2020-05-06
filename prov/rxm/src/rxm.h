@@ -279,6 +279,7 @@ struct rxm_domain {
 	size_t max_atomic_size;
 	uint64_t mr_key;
 	bool mr_local;
+	bool dyn_rbuf;
 	struct ofi_ops_flow_ctrl *flow_ctrl_ops;
 	struct ofi_bufpool *amo_bufpool;
 	fastlock_t amo_bufpool_lock;
@@ -423,6 +424,7 @@ struct rxm_recv_match_attr {
 	uint64_t ignore;
 };
 
+/* add data ptr to unexp msg data (rx_buf.pkt.data)  */
 struct rxm_unexp_msg {
 	struct dlist_entry entry;
 	fi_addr_t addr;
@@ -470,7 +472,8 @@ struct rxm_rx_buf {
 	/* MSG EP / shared context to which bufs would be posted to */
 	struct fid_ep *msg_ep;
 	struct dlist_entry repost_entry;
-	struct rxm_conn *conn;
+	struct rxm_conn *conn;			/* msg ep data was received on */
+	/* if recv_entry is set, then we matched dyn rbuf */
 	struct rxm_recv_entry *recv_entry;
 	struct rxm_unexp_msg unexp_msg;
 	uint64_t comp_flags;
@@ -695,6 +698,9 @@ struct rxm_msg_eq_entry {
 #define RXM_CM_ENTRY_SZ (sizeof(struct fi_eq_cm_entry) + \
 			 sizeof(union rxm_cm_data))
 
+ssize_t rxm_get_dyn_rbuf(struct fi_cq_data_entry *entry, struct iovec *iov,
+			 size_t *count);
+
 struct rxm_eager_ops {
 	int (*comp_tx)(struct rxm_ep *rxm_ep,
 		       struct rxm_tx_eager_buf *tx_eager_buf);
@@ -738,6 +744,7 @@ struct rxm_ep {
 	size_t			inject_limit;
 	size_t			eager_limit;
 	size_t			sar_limit;
+	size_t			unexp_cnt;
 
 	struct rxm_buf_pool	*buf_pools;
 
@@ -757,6 +764,8 @@ struct rxm_conn {
 	struct rxm_cmap_handle handle;
 
 	struct fid_ep *msg_ep;
+
+	/* unbuffered -- should be okay with 1 rx_buf */
 
 	/* This is used only in non-FI_THREAD_SAFE case */
 	struct rxm_pkt *inject_pkt;
@@ -971,6 +980,7 @@ rxm_tx_buf_alloc(struct rxm_ep *rxm_ep, enum rxm_buf_pool_type type)
 static inline void
 rxm_rx_buf_free(struct rxm_rx_buf *rx_buf)
 {
+	/* if unbuffered, this is a no-op */
 	if (rx_buf->repost) {
 		dlist_insert_tail(&rx_buf->repost_entry,
 				  &rx_buf->ep->repost_ready_list);

@@ -683,6 +683,11 @@ ssize_t rxm_handle_eager(struct rxm_rx_buf *rx_buf)
 					rx_buf->pkt.data, rx_buf->pkt.hdr.size);
 	assert(done_len == rx_buf->pkt.hdr.size);
 
+	/* dyn rbuf, eager data may be in allocated buffer */
+	done_len = ofi_copy_to_iov(rx_buf->recv_entry->rxm_iov.iov,
+				   rx_buf->recv_entry->rxm_iov.count,
+				   0, rx_buf->pkt.data, rx_buf->pkt.hdr.size);
+
 	return rxm_finish_recv(rx_buf, done_len);
 }
 
@@ -697,6 +702,7 @@ ssize_t rxm_handle_coll_eager(struct rxm_rx_buf *rx_buf)
 					      rx_buf->recv_entry->rxm_iov.count,
 					      &device);
 
+	/* dyn rbuf, eager data may be in allocated buffer */
 	done_len = ofi_copy_to_hmem_iov(iface, device,
 					rx_buf->recv_entry->rxm_iov.iov,
 					rx_buf->recv_entry->rxm_iov.count, 0,
@@ -724,6 +730,7 @@ ssize_t rxm_handle_rx_buf(struct rxm_rx_buf *rx_buf)
 	case rxm_ctrl_rndv_req:
 		return rxm_handle_rndv(rx_buf);
 	case rxm_ctrl_seg:
+		/* disable for unbuffered and increase eager size */
 		return rxm_handle_seg_data(rx_buf);
 	default:
 		FI_WARN(&rxm_prov, FI_LOG_CQ, "Unknown message type\n");
@@ -742,6 +749,7 @@ rxm_match_rx_buf(struct rxm_rx_buf *rx_buf,
 	entry = dlist_remove_first_match(&recv_queue->recv_list,
 					 recv_queue->match_recv, match_attr);
 	if (entry) {
+		/* unbuffered - recv_entry is the matching buffer we need */
 		rx_buf->recv_entry = container_of(entry, struct rxm_recv_entry, entry);
 		return rxm_handle_rx_buf(rx_buf);
 	}
@@ -952,7 +960,6 @@ err:
 	ofi_buf_free(rx_buf->recv_entry->rndv.tx_buf);
 	return ret;
 }
-
 
 static ssize_t rxm_rndv_send_wr_done_inject(struct rxm_tx_rndv_buf *tx_buf)
 {
@@ -1609,6 +1616,128 @@ ssize_t rxm_handle_comp(struct rxm_ep *rxm_ep, struct fi_cq_data_entry *comp)
 	}
 }
 
+static int rxm_get_unexp_rbuf(struct rxm_rx_buf *rx_buf)
+{
+	assert ((rx_buf->pkt.ctrl_hdr.type == rxm_ctrl_eager) ||
+		(rx_buf->pkt.ctrl_hdr.type == rxm_ctrl_rndv_req));
+
+	rx_buf->ep->unexp_cnt++;
+	if (rx_buf->pkt.ctrl_hdr.type == rxm_ctrl_eager) {
+		// allocate new unexp rbuf
+		// must free buffer after processing completion
+	}
+	return 0;
+}
+
+/* TODO: figure out if we're already holding a lock when reading the cq
+ * or if it's okay to acquire one
+ */
+static int rxm_get_rbuf(struct rxm_rx_buf *rx_buf)
+{
+	struct rxm_recv_match_attr match_attr;
+	struct rxm_recv_queue *recv_queue;
+	struct dlist_entry *entry;
+
+	/* To ensure ordering, we cannot match messages until we've read
+	 * all completions for unexpected messages from the msg cq.
+	 */
+	if (rx_buf->ep->unexp_cnt)
+		return rxm_get_unexp_rbuf(rx_buf);
+
+	if (rx_buf->ep->rxm_info->caps & (FI_SOURCE | FI_DIRECTED_RECV)) {
+		if (rx_buf->ep->srx_ctx)
+			rx_buf->conn = rxm_key2conn(rx_buf->ep, rx_buf->
+						    pkt.ctrl_hdr.conn_id);
+		if (!rx_buf->conn)
+			return -FI_EOTHER;
+		match_attr.addr = rx_buf->conn->handle.fi_addr;
+	} else {
+		match_attr.addr = FI_ADDR_UNSPEC;
+	}
+
+	if (rx_buf->pkt.hdr.op == ofi_op_msg) {
+		match_attr.tag = 0;
+		recv_queue = &rx_buf->ep->recv_queue;
+	} else {
+		assert(rx_buf->pkt.hdr.op == ofi_op_tagged);
+		match_attr.tag = rx_buf->pkt.hdr.tag;
+		recv_queue = &rx_buf->ep->trecv_queue;
+	}
+
+	entry = dlist_remove_first_match(&recv_queue->recv_list,
+					 recv_queue->match_recv, &match_attr);
+	if (!entry)
+		return rxm_get_unexp_rbuf(rx_buf);
+
+	rx_buf->recv_entry = container_of(entry, struct rxm_recv_entry, entry);
+	return 0;
+}
+
+/* Called back from msg cq read */
+ssize_t rxm_get_dyn_rbuf(struct fi_cq_data_entry *entry, struct iovec *iov,
+			 size_t *count)
+{
+	struct rxm_rx_buf *rx_buf;
+	int ret;
+
+	rx_buf = entry->op_context;
+	rx_buf->ep = ;
+
+	assert((rx_buf->pkt.hdr.version == OFI_OP_VERSION) &&
+		(rx_buf->pkt.ctrl_hdr.version == RXM_CTRL_VERSION));
+	assert(!(rx_buf->ep->rxm_info->mode & FI_BUFFERED_RECV));
+
+	switch (rx_buf->pkt.ctrl_hdr.type) {
+	case rxm_ctrl_eager:
+		ret = rxm_get_rbuf(rx_buf);
+		if (ret)
+			return ret;
+
+		if (rx_buf->recv_entry) {
+			*count = rx_buf->recv_entry->rxm_iov.count;
+			memcpy(iov, rx_buf->recv_entry->rxm_iov.iov, *count *
+			       sizeof(*iov));
+		} else {
+			*count = 1;
+			iov[0].iov_base = rx_buf->unexp_msg.addr; // rx_buf->unexp_msg.data?
+			iov[0].iov_len = rxm_eager_limit;
+		}
+		break;
+	case rxm_ctrl_rndv_req:
+		/* find matching receive for ordering, but only need to receive
+		 * rendezvous header to complete message
+		 */
+		ret = rxm_get_rbuf(rx_buf);
+		if (ret)
+			return ret;
+
+		*count = 1;
+		iov[0].iov_base = &rx_buf->pkt + 1;
+		iov[0].iov_len = sizeof(struct rxm_rndv_hdr);
+		break;
+	case rxm_ctrl_atomic:
+		*count = 1;
+		iov[0].iov_base = &rx_buf->pkt + 1;
+		iov[0].iov_len = sizeof(struct rxm_atomic_hdr);
+		break;
+	case rxm_ctrl_atomic_resp:
+		*count = 1;
+		iov[0].iov_base = &rx_buf->pkt + 1;
+		iov[0].iov_len = sizeof(struct rxm_atomic_resp_hdr);
+		break;
+	case rxm_ctrl_seg:
+	case rxm_ctrl_rndv_rd_done:
+	case rxm_ctrl_credit:
+	default:
+		FI_WARN(&rxm_prov, FI_LOG_CQ,
+			"Unexpected request for dynamic rbuf\n");
+		*count = 0;
+		break;
+	}
+
+	return 0;
+}
+
 void rxm_cq_write_error(struct util_cq *cq, struct util_cntr *cntr,
 			void *op_context, int err)
 {
@@ -1777,7 +1906,9 @@ static int rxm_msg_ep_recv(struct rxm_rx_buf *rx_buf)
 	if (rx_buf->ep->srx_ctx)
 		rx_buf->conn = NULL;
 	rx_buf->hdr.state = RXM_RX;
+	rx_buf->recv_entry = NULL;
 
+	/* add 0, not eager limit, for dyn rbuf */
 	ret = (int) fi_recv(rx_buf->msg_ep, &rx_buf->pkt,
 			    rxm_eager_limit + sizeof(struct rxm_pkt),
 			    rx_buf->hdr.desc, FI_ADDR_UNSPEC, rx_buf);
@@ -1798,6 +1929,8 @@ int rxm_msg_ep_prepost_recv(struct rxm_ep *rxm_ep, struct fid_ep *msg_ep)
 	struct rxm_rx_buf *rx_buf;
 	int ret;
 	size_t i;
+
+	/* Skip if using unbuffered receives */
 
 	for (i = 0; i < rxm_ep->msg_info->rx_attr->size; i++) {
 		rx_buf = rxm_rx_buf_alloc(rxm_ep, msg_ep, true);
