@@ -134,12 +134,29 @@ static int tcpx_domain_close(fid_t fid)
 	return FI_SUCCESS;
 }
 
+static int tcpx_domain_ops_set(struct fid *fid, const char *name, uint64_t flags,
+			void *ops, void *context)
+{
+	struct tcpx_domain *tcpx_domain;
+
+	tcpx_domain = container_of(fid, struct tcpx_domain,
+				   util_domain.domain_fid.fid);
+
+	if (strcmp(name, OFI_OPS_DYNAMIC_RBUF) == 0) {
+		tcpx_domain->dynamic_rbuf = ops;
+		return FI_SUCCESS;
+	}
+
+	return -FI_ENOSYS;
+}
+
 static struct fi_ops tcpx_domain_fi_ops = {
 	.size = sizeof(struct fi_ops),
 	.close = tcpx_domain_close,
 	.bind = fi_no_bind,
 	.control = fi_no_control,
 	.ops_open = fi_no_ops_open,
+	.ops_set = tcpx_domain_ops_set,
 };
 
 static struct fi_ops_mr tcpx_domain_fi_ops_mr = {

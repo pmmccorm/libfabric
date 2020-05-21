@@ -449,14 +449,47 @@ struct ofi_ops_flow_ctrl rxm_no_ops_flow_ctrl = {
 	.set_send_handler = rxm_no_credit_handler,
 };
 
+static void rxm_config_flow_ctrl(struct rxm_domain *domain)
+{
+	struct ofi_ops_flow_ctrl *flow_ctrl_ops;
+	int ret;
+
+	ret = fi_open_ops(&domain->msg_domain->fid, OFI_OPS_FLOW_CTRL, 0,
+			  (void **) &flow_ctrl_ops, NULL);
+
+	if (ret == 0 && flow_ctrl_ops) {
+		domain->flow_ctrl_ops = flow_ctrl_ops;
+		domain->flow_ctrl_ops->set_send_handler(domain->msg_domain,
+							rxm_send_credits);
+	} else if (ret == -FI_ENOSYS) {
+		domain->flow_ctrl_ops = &rxm_no_ops_flow_ctrl;
+	} else {
+	}
+
+	return;
+}
+
+struct ofi_ops_dynamic_rbuf rxm_dynamic_rbuf = {
+	.size = sizeof(struct ofi_ops_dynamic_rbuf),
+	.get_rbuf = rxm_get_dyn_rbuf,
+};
+
+static void rxm_config_dyn_rbuf(struct rxm_domain *domain)
+{
+	int ret;
+
+	ret = fi_set_ops(&domain->msg_domain->fid, OFI_OPS_DYNAMIC_RBUF, 0,
+			 (void *) &rxm_dynamic_rbuf, NULL);
+	domain->dyn_rbuf = (ret == FI_SUCCESS);
+}
+
 int rxm_domain_open(struct fid_fabric *fabric, struct fi_info *info,
 		struct fid_domain **domain, void *context)
 {
-	int ret;
 	struct rxm_domain *rxm_domain;
 	struct rxm_fabric *rxm_fabric;
 	struct fi_info *msg_info;
-	struct ofi_ops_flow_ctrl *flow_ctrl_ops;
+	int ret;
 
 	rxm_domain = calloc(1, sizeof(*rxm_domain));
 	if (!rxm_domain)
@@ -501,22 +534,12 @@ int rxm_domain_open(struct fid_fabric *fabric, struct fi_info *info,
 
 	fastlock_init(&rxm_domain->amo_bufpool_lock);
 
-	ret = fi_open_ops(&rxm_domain->msg_domain->fid, OFI_OPS_FLOW_CTRL, 0,
-			  (void **) &flow_ctrl_ops, NULL);
-	if (!ret && flow_ctrl_ops) {
-		rxm_domain->flow_ctrl_ops = flow_ctrl_ops;
-		rxm_domain->flow_ctrl_ops->set_send_handler(
-			rxm_domain->msg_domain, rxm_send_credits);
-	} else if (ret == -FI_ENOSYS) {
-		rxm_domain->flow_ctrl_ops = &rxm_no_ops_flow_ctrl;
-	} else {
-		goto err4;
-	}
+	/* detect/set optional capabilities */
+	rxm_config_flow_ctrl(rxm_domain);
+	rxm_config_dyn_rbuf(rxm_domain);
 
 	fi_freeinfo(msg_info);
 	return 0;
-err4:
-	ofi_bufpool_destroy(rxm_domain->amo_bufpool);
 err3:
 	fi_close(&rxm_domain->msg_domain->fid);
 err2:
