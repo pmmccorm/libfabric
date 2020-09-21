@@ -122,7 +122,11 @@ static int tcpx_update_rx_iov(struct tcpx_xfer_entry *rx_entry)
 	cq_entry.len = (rx_entry->hdr.base_hdr.size -
 			 rx_entry->hdr.base_hdr.payload_off) -
 			rx_entry->rem_len;
+
+	// XXX this points into rx_buf somewhere, and looks unused anyways,
+	// XXX is this something we need?
 	cq_entry.buf = rx_entry->mrecv_msg_start;
+
 	cq_entry.data = 0;
 
 	rx_entry->iov_cnt = TCPX_IOV_LIMIT;
