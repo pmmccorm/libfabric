@@ -1681,11 +1681,11 @@ ssize_t rxm_get_dyn_rbuf(struct fi_cq_data_entry *entry, struct iovec *iov,
 	int ret;
 
 	rx_buf = entry->op_context;
-	rx_buf->ep = ;
+	//rx_buf->ep = ;
+	//assert(!(rx_buf->ep->rxm_info->mode & FI_BUFFERED_RECV));
 
 	assert((rx_buf->pkt.hdr.version == OFI_OP_VERSION) &&
 		(rx_buf->pkt.ctrl_hdr.version == RXM_CTRL_VERSION));
-	assert(!(rx_buf->ep->rxm_info->mode & FI_BUFFERED_RECV));
 
 	switch (rx_buf->pkt.ctrl_hdr.type) {
 	case rxm_ctrl_eager:
