@@ -2592,7 +2592,7 @@ static void rxm_ep_sar_init(struct rxm_ep *rxm_ep)
 	}
 }
 
-static void rxm_ep_settings_init(struct rxm_ep *rxm_ep)
+static void rxm_ep_settings_init(struct rxm_ep *rxm_ep, struct rxm_domain *rxm_domain)
 {
 	size_t max_prog_val;
 
@@ -2619,6 +2619,8 @@ static void rxm_ep_settings_init(struct rxm_ep *rxm_ep)
 					(sizeof(struct rxm_pkt) +
 					 sizeof(struct rxm_rndv_hdr))),
 					   rxm_eager_limit);
+
+	rxm_ep->dyn_rbuf = rxm_domain->dyn_rbuf;
 
 	assert(!rxm_ep->min_multi_recv_size);
 	rxm_ep->min_multi_recv_size = rxm_eager_limit;
@@ -2930,9 +2932,11 @@ struct rxm_rndv_ops rxm_rndv_ops_write = {
 int rxm_endpoint(struct fid_domain *domain, struct fi_info *info,
 		 struct fid_ep **ep_fid, void *context)
 {
+	struct rxm_domain *rxm_domain;
 	struct rxm_ep *rxm_ep;
 	int ret, use_rndv_write = 0;
 
+	rxm_domain = container_of(&domain->fid, struct rxm_domain, util_domain.domain_fid.fid);
 	rxm_ep = calloc(1, sizeof(*rxm_ep));
 	if (!rxm_ep)
 		return -FI_ENOMEM;
@@ -2964,7 +2968,7 @@ int rxm_endpoint(struct fid_domain *domain, struct fi_info *info,
 	if (ret)
 		goto err2;
 
-	rxm_ep_settings_init(rxm_ep);
+	rxm_ep_settings_init(rxm_ep, rxm_domain);
 
 	*ep_fid = &rxm_ep->util_ep.ep_fid;
 	(*ep_fid)->fid.ops = &rxm_ep_fi_ops;

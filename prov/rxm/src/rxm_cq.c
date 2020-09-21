@@ -1899,7 +1899,7 @@ void rxm_handle_comp_error(struct rxm_ep *rxm_ep)
 		FI_WARN(&rxm_prov, FI_LOG_CQ, "Unable to ofi_cq_write_error\n");
 }
 
-static int rxm_msg_ep_recv(struct rxm_rx_buf *rx_buf)
+static int rxm_msg_ep_recv(struct rxm_rx_buf *rx_buf, bool dyn_rbuf)
 {
 	int ret, level;
 
@@ -1908,9 +1908,15 @@ static int rxm_msg_ep_recv(struct rxm_rx_buf *rx_buf)
 	rx_buf->hdr.state = RXM_RX;
 	rx_buf->recv_entry = NULL;
 
-	/* add 0, not eager limit, for dyn rbuf */
-	ret = (int) fi_recv(rx_buf->msg_ep, &rx_buf->pkt,
-			    rxm_eager_limit + sizeof(struct rxm_pkt),
+	/* for dynamic rbuf size rxm buffer to just grab rxm_pkt header */
+
+	if (dyn_rbuf)
+		ret = (int) fi_recv(rx_buf->msg_ep, &rx_buf->pkt,
+			    sizeof(struct rxm_pkt),
+			    rx_buf->hdr.desc, FI_ADDR_UNSPEC, rx_buf);
+	else
+		ret = (int) fi_recv(rx_buf->msg_ep, &rx_buf->pkt,
+			    rxm_eager_limit,
 			    rx_buf->hdr.desc, FI_ADDR_UNSPEC, rx_buf);
 	if (!ret)
 		return 0;
@@ -1931,13 +1937,25 @@ int rxm_msg_ep_prepost_recv(struct rxm_ep *rxm_ep, struct fid_ep *msg_ep)
 	size_t i;
 
 	/* Skip if using unbuffered receives */
+	if (rxm_ep->dyn_rbuf) {
+		rx_buf = rxm_rx_buf_alloc(rxm_ep, msg_ep, true);
+		if (!rx_buf)
+			return -FI_ENOMEM;
+
+		ret = rxm_msg_ep_recv(rx_buf, true);
+		if (ret)
+			ofi_buf_free(&rx_buf->hdr);
+
+		return ret;
+	}
+
 
 	for (i = 0; i < rxm_ep->msg_info->rx_attr->size; i++) {
 		rx_buf = rxm_rx_buf_alloc(rxm_ep, msg_ep, true);
 		if (!rx_buf)
 			return -FI_ENOMEM;
 
-		ret = rxm_msg_ep_recv(rx_buf);
+		ret = rxm_msg_ep_recv(rx_buf, false);
 		if (ret) {
 			ofi_buf_free(&rx_buf->hdr);
 			return ret;
@@ -1967,7 +1985,7 @@ void rxm_ep_do_progress(struct util_ep *util_ep)
 			continue;
 		}
 
-		ret = rxm_msg_ep_recv(buf);
+		ret = rxm_msg_ep_recv(buf, false);
 		if (ret) {
 			if (ret == -FI_EAGAIN)
 				ofi_buf_free(&buf->hdr);

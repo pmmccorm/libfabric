@@ -737,6 +737,7 @@ struct rxm_ep {
 	bool			msg_mr_local;
 	bool			rdm_mr_local;
 	bool			do_progress;
+	bool			dyn_rbuf;
 
 	size_t			min_multi_recv_size;
 	size_t			buffered_min;
